@@ -88,8 +88,12 @@ final class KeyboardViewModel: ObservableObject {
   }
 
   private func isOpenAccessGranted() -> Bool {
-    // Keyboard extensions can check if they have open access by trying to access the pasteboard
-    UIPasteboard.general.hasStrings || UIPasteboard.general.string != nil || true
+    // Test Full Access by writing to the pasteboard -- this fails when Full Access is off
+    let original = UIPasteboard.general.string
+    UIPasteboard.general.string = "voicey-access-check"
+    let hasAccess = UIPasteboard.general.string == "voicey-access-check"
+    UIPasteboard.general.string = original
+    return hasAccess
   }
 
   private func checkModelAvailability() {
@@ -122,11 +126,18 @@ final class KeyboardViewModel: ObservableObject {
       return
     }
 
-    // Check microphone permission
-    let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-    guard micStatus == .authorized else {
-      if micStatus == .notDetermined {
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+    // Re-check Full Access before each recording attempt
+    checkFullAccess()
+    guard hasFullAccess else {
+      statusMessage = "Enable Full Access in Settings > Keyboards > Voicey Dictation."
+      return
+    }
+
+    // Use AVAudioSession.recordPermission -- the correct API for keyboard extensions
+    let recordPermission = AVAudioSession.sharedInstance().recordPermission
+    guard recordPermission == .granted else {
+      if recordPermission == .undetermined {
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
           Task { @MainActor in
             if granted {
               self?.startRecording()
@@ -136,7 +147,7 @@ final class KeyboardViewModel: ObservableObject {
           }
         }
       } else {
-        statusMessage = "Microphone access required. Enable Full Access in Settings > Voicey."
+        statusMessage = "Microphone access denied. Enable Full Access in Settings > Keyboards > Voicey."
       }
       return
     }
@@ -187,9 +198,18 @@ final class KeyboardViewModel: ObservableObject {
     audioCaptureManager?.delegate = levelUpdater
     self._levelUpdater = levelUpdater
 
+    let started = audioCaptureManager?.startCapture() ?? false
+    guard started else {
+      let reason = audioCaptureManager?.lastError ?? "Unknown error"
+      AppLogger.audio.error("KeyboardVM: Audio capture failed to start: \(reason)")
+      transcriptionState = .error(message: reason)
+      statusMessage = "Mic error: \(reason)"
+      _levelUpdater = nil
+      return
+    }
+
     transcriptionState = .recording(startTime: Date())
     statusMessage = "Listening..."
-    audioCaptureManager?.startCapture()
   }
 
   // Prevent deallocation of the delegate
@@ -205,6 +225,9 @@ final class KeyboardViewModel: ObservableObject {
     _levelUpdater = nil
 
     let durationSec = Double(audioBuffer.count) / 16000.0
+    let rms = audioBuffer.isEmpty ? 0 : sqrt(audioBuffer.map { $0 * $0 }.reduce(0, +) / Float(audioBuffer.count))
+    AppLogger.audio.info("KeyboardVM: Captured \(audioBuffer.count) samples (~\(String(format: "%.1f", durationSec))s, RMS=\(String(format: "%.4f", rms)))")
+
     if durationSec < 0.5 {
       transcriptionState = .idle
       statusMessage = "Too short. Try again."
@@ -228,6 +251,7 @@ final class KeyboardViewModel: ObservableObject {
       }
 
       let processedText = postProcessor?.process(result) ?? result.text
+      AppLogger.audio.info("KeyboardVM: Transcription raw='\(result.text)', processed='\(processedText)'")
 
       if processedText.isEmpty {
         transcriptionState = .idle

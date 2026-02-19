@@ -23,7 +23,7 @@ struct ContentView: View {
 
   private var headerSection: some View {
     VStack(spacing: 12) {
-      Image(systemName: "mic.badge.waveform")
+      Image(systemName: "mic.circle.fill")
         .font(.system(size: 48))
         .foregroundStyle(.blue)
         .symbolRenderingMode(.hierarchical)

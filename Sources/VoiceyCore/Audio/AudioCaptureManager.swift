@@ -9,6 +9,9 @@ public protocol AudioCaptureManagerDelegate: AnyObject {
 public final class AudioCaptureManager {
   public weak var delegate: AudioCaptureManagerDelegate?
 
+  /// Describes the most recent capture failure, if any.
+  public private(set) var lastError: String?
+
   private var audioEngine: AVAudioEngine?
   private var inputNode: AVAudioInputNode?
   private var audioBuffer: [Float] = []
@@ -17,68 +20,69 @@ public final class AudioCaptureManager {
   private let targetSampleRate: Double = 16000.0
   private var converter: AVAudioConverter?
 
-  public init() {
-    setupAudioSession()
-  }
+  public init() {}
 
-  private func setupAudioSession() {
-    #if os(iOS)
+  #if os(iOS)
+  private func activateAudioSession() throws {
     let session = AVAudioSession.sharedInstance()
-    do {
-      try session.setCategory(.record, mode: .measurement, options: [])
-      try session.setActive(true)
-    } catch {
-      AppLogger.audio.error("Failed to configure audio session: \(error)")
-    }
-    #endif
+    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+    try session.setActive(true, options: [])
+    AppLogger.audio.info("AudioCapture: Audio session activated (category=\(session.category.rawValue), sampleRate=\(session.sampleRate), inputs=\(session.availableInputs?.count ?? 0))")
   }
+  #endif
 
-  public func startCapture() {
+  /// Start capturing audio from the microphone.
+  /// Returns `true` if capture started successfully, `false` on failure.
+  /// Check `lastError` for the specific failure reason.
+  @discardableResult
+  public func startCapture() -> Bool {
+    lastError = nil
     AppLogger.audio.info("AudioCapture: Starting capture...")
     audioBuffer.removeAll()
 
     #if os(iOS)
-    setupAudioSession()
+    do {
+      try activateAudioSession()
+    } catch {
+      lastError = "Audio session setup failed: \(error.localizedDescription)"
+      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      return false
+    }
     #endif
 
     audioEngine = AVAudioEngine()
     guard let audioEngine = audioEngine else {
-      AppLogger.audio.error("AudioCapture: Failed to create audio engine")
-      return
+      lastError = "Failed to create audio engine"
+      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      return false
     }
 
     inputNode = audioEngine.inputNode
     guard let inputNode = inputNode else {
-      AppLogger.audio.error("AudioCapture: Failed to get input node")
-      return
+      lastError = "Failed to get audio input node"
+      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      return false
     }
 
-    let inputFormat = inputNode.outputFormat(forBus: 0)
-
-    guard
-      let outputFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: targetSampleRate,
-        channels: 1,
-        interleaved: false
-      )
-    else {
-      return
-    }
-
-    if inputFormat.sampleRate != targetSampleRate {
-      converter = AVAudioConverter(from: inputFormat, to: outputFormat)
-    }
-
+    // Use nil format for the tap -- lets the system use the hardware's native format.
+    // Specifying an explicit format can cause audioEngine.start() to fail in
+    // keyboard extensions where the audio routing differs from a normal app.
     let bufferSize: AVAudioFrameCount = 1024
-    inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] buffer, _ in
+    inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: nil) { [weak self] buffer, _ in
       self?.processAudioBuffer(buffer)
     }
 
     do {
       try audioEngine.start()
+      AppLogger.audio.info("AudioCapture: Engine started successfully")
+      return true
     } catch {
-      AppLogger.audio.error("Failed to start audio engine: \(error)")
+      lastError = "Audio engine failed to start: \(error.localizedDescription)"
+      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      inputNode.removeTap(onBus: 0)
+      self.audioEngine = nil
+      self.inputNode = nil
+      return false
     }
   }
 
@@ -117,7 +121,17 @@ public final class AudioCaptureManager {
 
     var samples: [Float]
 
-    if inputFormat.sampleRate != targetSampleRate || inputFormat.channelCount > 1 {
+    let needsConversion = inputFormat.sampleRate != targetSampleRate || inputFormat.channelCount > 1
+    if needsConversion {
+      if converter == nil || converter?.inputFormat != inputFormat {
+        let outputFormat = AVAudioFormat(
+          commonFormat: .pcmFormatFloat32,
+          sampleRate: targetSampleRate,
+          channels: 1,
+          interleaved: false
+        )!
+        converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+      }
       samples = convertBuffer(buffer)
     } else {
       samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
