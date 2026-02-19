@@ -2,6 +2,7 @@ import ApplicationServices
 import AppKit
 import Carbon.HIToolbox
 import Foundation
+import VoiceyCore
 
 /// Pastes text using Accessibility API instead of CGEvents.
 /// This approach works in sandboxed apps since it uses AXPasteAction

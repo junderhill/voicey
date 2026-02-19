@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import VoiceyCore
 
 final class StatusBarController {
   private var statusItem: NSStatusItem

@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import VoiceyCore
 
 /// Keyboard simulation using CGEventPost
 /// Used as a last-resort fallback for pasting when Accessibility API methods fail.

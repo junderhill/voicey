@@ -12,41 +12,50 @@ var packageDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0")
 ]
 
-// Target dependencies
-var targetDependencies: [Target.Dependency] = [
-    "KeyboardShortcuts",
-    "WhisperKit"
+// macOS app target dependencies
+var macOSTargetDependencies: [Target.Dependency] = [
+    "VoiceyCore",
+    "KeyboardShortcuts"
 ]
 
 // Add Sparkle only for direct distribution builds
-// This keeps the App Store build clean (no auto-update framework)
 if isDirectDistribution {
     packageDependencies.append(
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.0")
     )
-    targetDependencies.append("Sparkle")
+    macOSTargetDependencies.append("Sparkle")
 }
 
 let package = Package(
     name: "Voicey",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v13),
+        .iOS(.v16)
     ],
     products: [
+        .library(name: "VoiceyCore", targets: ["VoiceyCore"]),
         .executable(name: "Voicey", targets: ["Voicey"])
     ],
     dependencies: packageDependencies,
     targets: [
-        .executableTarget(
-            name: "Voicey",
-            dependencies: targetDependencies,
-            path: "Sources/Voicey",
+        .target(
+            name: "VoiceyCore",
+            dependencies: ["WhisperKit"],
+            path: "Sources/VoiceyCore",
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("Accelerate"),
                 .linkedFramework("Metal"),
                 .linkedFramework("CoreML")
+            ]
+        ),
+        .executableTarget(
+            name: "Voicey",
+            dependencies: macOSTargetDependencies,
+            path: "Sources/Voicey",
+            resources: [
+                .process("../../Resources")
             ]
         )
     ]

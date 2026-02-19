@@ -1,0 +1,50 @@
+name: VoiceyKeyboard
+options:
+  bundleIdPrefix: work.voicey
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "15.0"
+
+packages:
+  VoiceyCore:
+    path: ..
+
+targets:
+  VoiceyKeyboard:
+    type: application
+    platform: iOS
+    sources:
+      - HostApp
+    settings:
+      base:
+        INFOPLIST_FILE: HostApp/Info.plist
+        CODE_SIGN_ENTITLEMENTS: HostApp/VoiceyKeyboard.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: work.voicey.VoiceyKeyboard
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: false
+        SWIFT_VERSION: "5.9"
+    dependencies:
+      - package: VoiceyCore
+        product: VoiceyCore
+      - target: VoiceyDictation
+        embed: true
+    postBuildScripts: []
+
+  VoiceyDictation:
+    type: app-extension
+    platform: iOS
+    sources:
+      - KeyboardExtension
+    settings:
+      base:
+        INFOPLIST_FILE: KeyboardExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: KeyboardExtension/KeyboardExtension.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: work.voicey.VoiceyKeyboard.Dictation
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: false
+        SWIFT_VERSION: "5.9"
+    dependencies:
+      - package: VoiceyCore
+        product: VoiceyCore

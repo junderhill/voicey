@@ -1,4 +1,5 @@
 import AppKit
+import VoiceyCore
 import os
 
 /// Manages clipboard operations

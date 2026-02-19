@@ -4,23 +4,20 @@ import WhisperKit
 import os
 
 /// Available Whisper model variants
-enum WhisperModel: String, CaseIterable, Identifiable {
-  // Note: WhisperKit uses underscores for turbo variants (large-v3_turbo, not large-v3-turbo)
-  // Multilingual models (support 99+ languages)
+public enum WhisperModel: String, CaseIterable, Identifiable, Hashable {
   case largeTurbo = "large-v3_turbo"
   case large = "large-v3"
   case distilLarge = "distil-large-v3"
   case small = "small"
   case base = "base"
   case tiny = "tiny"
-  // English-only models (optimized for English, smaller/faster)
   case smallEn = "small.en"
   case baseEn = "base.en"
   case tinyEn = "tiny.en"
 
-  var id: String { rawValue }
+  public var id: String { rawValue }
 
-  var displayName: String {
+  public var displayName: String {
     switch self {
     case .largeTurbo: return "Large v3 Turbo"
     case .large: return "Large v3"
@@ -34,7 +31,7 @@ enum WhisperModel: String, CaseIterable, Identifiable {
     }
   }
 
-  var description: String {
+  public var description: String {
     switch self {
     case .largeTurbo: return "Fast & accurate, 8x faster than Large (~1.5GB)"
     case .large: return "Maximum accuracy, slower (~3GB)"
@@ -48,27 +45,25 @@ enum WhisperModel: String, CaseIterable, Identifiable {
     }
   }
 
-  var isRecommended: Bool {
+  public var isRecommended: Bool {
     self == .largeTurbo
   }
 
-  /// Whether this model only supports English
-  var isEnglishOnly: Bool {
+  public var isEnglishOnly: Bool {
     switch self {
     case .smallEn, .baseEn, .tinyEn: return true
     default: return false
     }
   }
 
-  /// Whether this is a "fast" model suitable for quick startup
-  var isFastModel: Bool {
+  public var isFastModel: Bool {
     switch self {
     case .base, .baseEn, .tiny, .tinyEn, .small, .smallEn: return true
     default: return false
     }
   }
 
-  var diskSize: Int64 {
+  public var diskSize: Int64 {
     switch self {
     case .largeTurbo: return 1_500_000_000
     case .large: return 3_000_000_000
@@ -79,7 +74,7 @@ enum WhisperModel: String, CaseIterable, Identifiable {
     }
   }
 
-  var memoryUsage: Int64 {
+  public var memoryUsage: Int64 {
     switch self {
     case .largeTurbo: return 3_000_000_000
     case .large: return 6_000_000_000
@@ -90,8 +85,7 @@ enum WhisperModel: String, CaseIterable, Identifiable {
     }
   }
 
-  /// WhisperKit model repository identifier (how WhisperKit names folders)
-  var whisperKitModelId: String {
+  public var whisperKitModelId: String {
     switch self {
     case .largeTurbo: return "openai_whisper-large-v3_turbo"
     case .large: return "openai_whisper-large-v3"
@@ -104,28 +98,36 @@ enum WhisperModel: String, CaseIterable, Identifiable {
     case .tinyEn: return "openai_whisper-tiny.en"
     }
   }
+
+  /// Whether this model is suitable for use in a keyboard extension (~120MB memory limit)
+  public var isSuitableForExtension: Bool {
+    memoryUsage <= 250_000_000
+  }
+
+  /// Models recommended for keyboard extension use (small memory footprint)
+  public static var extensionCompatible: [WhisperModel] {
+    allCases.filter { $0.isSuitableForExtension }
+  }
 }
 
-/// Callback for when a background model upgrade completes
-typealias ModelUpgradeCallback = (WhisperModel) -> Void
+public typealias ModelUpgradeCallback = (WhisperModel) -> Void
 
 /// Manages downloading, storing, and selecting Whisper models via WhisperKit
-final class ModelManager: ObservableObject {
-  static let shared = ModelManager()
+public final class ModelManager: ObservableObject {
+  public static let shared = ModelManager()
 
-  @Published var downloadProgress: [WhisperModel: Double] = [:]
-  @Published var downloadedModels: Set<WhisperModel> = []
-  @Published var isDownloading: [WhisperModel: Bool] = [:]
-  @Published var downloadError: String?
+  @Published public var downloadProgress: [WhisperModel: Double] = [:]
+  @Published public var downloadedModels: Set<WhisperModel> = []
+  @Published public var isDownloading: [WhisperModel: Bool] = [:]
+  @Published public var downloadError: String?
+  @Published public var isPrewarming: [WhisperModel: Bool] = [:]
+  @Published public var pendingUpgradeModel: WhisperModel?
 
-  /// Whether a model is currently being prewarmed (loaded into memory)
-  @Published var isPrewarming: [WhisperModel: Bool] = [:]
+  public var onUpgradeReady: ModelUpgradeCallback?
 
-  /// Model that's ready for background upgrade (downloaded and prewarmed)
-  @Published var pendingUpgradeModel: WhisperModel?
-
-  /// Callback when a background model upgrade is ready
-  var onUpgradeReady: ModelUpgradeCallback?
+  /// Notification callbacks -- wired up by the platform layer (macOS app, iOS app)
+  public var onDownloadComplete: ((WhisperModel) -> Void)?
+  public var onDownloadFailed: ((String) -> Void)?
 
   private let fileManager = FileManager.default
   private var downloadTasks: [WhisperModel: Task<Void, Never>] = [:]
@@ -136,19 +138,11 @@ final class ModelManager: ObservableObject {
 
   // MARK: - Model Hierarchy
 
-  /// The fast model for English users
-  static let fastModelEnglish = WhisperModel.baseEn
+  public static let fastModelEnglish = WhisperModel.baseEn
+  public static let fastModelMultilingual = WhisperModel.base
+  public static let qualityModel = WhisperModel.largeTurbo
 
-  /// The fast model for non-English users (multilingual)
-  static let fastModelMultilingual = WhisperModel.base
-
-  /// The quality model used for better accuracy (multilingual)
-  static let qualityModel = WhisperModel.largeTurbo
-
-  /// Returns the appropriate fast model based on the user's system language
-  /// - English users get the English-optimized model (slightly better for English)
-  /// - Non-English users get the multilingual model
-  static var fastModelForCurrentLocale: WhisperModel {
+  public static var fastModelForCurrentLocale: WhisperModel {
     let languageCode = Locale.current.language.languageCode?.identifier ?? "en"
     if languageCode == "en" {
       return fastModelEnglish
@@ -157,38 +151,28 @@ final class ModelManager: ObservableObject {
     }
   }
 
-  /// For backward compatibility - returns the locale-appropriate fast model
-  static var fastModel: WhisperModel {
+  public static var fastModel: WhisperModel {
     fastModelForCurrentLocale
   }
 
-  /// Check if we should upgrade from a fast model to quality model
-  var shouldUpgradeToQuality: Bool {
+  public var shouldUpgradeToQuality: Bool {
     let currentModel = SettingsManager.shared.selectedModel
     return currentModel.isFastModel && isDownloaded(Self.qualityModel)
   }
 
   // MARK: - CoreML Compilation Check
 
-  /// Check if a model has likely been compiled by CoreML before (fast to load)
-  /// CoreML caches compiled models, so subsequent loads are much faster
-  func isLikelyCompiled(_ model: WhisperModel) -> Bool {
-    // Check for CoreML cache - this is where device-specific optimizations are stored
-    // The cache location varies but we can check for common indicators
-
+  public func isLikelyCompiled(_ model: WhisperModel) -> Bool {
     guard let modelPath = modelPath(for: model) else { return false }
     let modelURL = URL(fileURLWithPath: modelPath)
 
-    // Check if the AudioEncoder has a compiled data file (coremldata.bin)
-    // This is created after first successful load
     let audioEncoderCompiled = modelURL
       .appendingPathComponent("AudioEncoder.mlmodelc/coremldata.bin")
 
     if fileManager.fileExists(atPath: audioEncoderCompiled.path) {
-      // Check file size - compiled models have substantial coremldata.bin files
       if let attrs = try? fileManager.attributesOfItem(atPath: audioEncoderCompiled.path),
          let size = attrs[.size] as? Int64,
-         size > 1_000_000 {  // > 1MB suggests it's been compiled
+         size > 1_000_000 {
         return true
       }
     }
@@ -198,11 +182,21 @@ final class ModelManager: ObservableObject {
 
   // MARK: - Paths
 
-  var modelsDirectory: URL {
+  public var modelsDirectory: URL {
+    #if os(iOS)
+    // On iOS, use App Group shared container so both host app and keyboard extension can access models
+    if let containerURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: "group.work.voicey.Voicey") {
+      let voiceyDir = containerURL.appendingPathComponent("Models", isDirectory: true)
+      if !fileManager.fileExists(atPath: voiceyDir.path) {
+        try? fileManager.createDirectory(at: voiceyDir, withIntermediateDirectories: true)
+      }
+      return voiceyDir
+    }
+    #endif
+
     let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     let voiceyDir = appSupport.appendingPathComponent("Voicey/Models", isDirectory: true)
 
-    // Create directory if needed
     if !fileManager.fileExists(atPath: voiceyDir.path) {
       try? fileManager.createDirectory(at: voiceyDir, withIntermediateDirectories: true)
     }
@@ -210,9 +204,7 @@ final class ModelManager: ObservableObject {
     return voiceyDir
   }
 
-  /// Returns the path to a model if it exists and is complete, checking WhisperKit's nested directory structure
-  func modelPath(for model: WhisperModel) -> String? {
-    // WhisperKit stores models in: models/argmaxinc/whisperkit-coreml/{model_id}/
+  public func modelPath(for model: WhisperModel) -> String? {
     let whisperKitPath =
       modelsDirectory
       .appendingPathComponent("models/argmaxinc/whisperkit-coreml")
@@ -225,16 +217,12 @@ final class ModelManager: ObservableObject {
     return nil
   }
 
-  /// Validates that a model directory has all required files for WhisperKit to load
   private func isModelComplete(at modelDir: URL) -> Bool {
-    // Check if the model directory exists and has all essential files
     let configPath = modelDir.appendingPathComponent("config.json")
     guard fileManager.fileExists(atPath: configPath.path) else {
       return false
     }
 
-    // Verify essential model components exist with their weight files
-    // A complete model must have MelSpectrogram, AudioEncoder, and TextDecoder
     let essentialComponents = [
       "MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"
     ]
@@ -242,7 +230,6 @@ final class ModelManager: ObservableObject {
     for component in essentialComponents {
       let componentPath = modelDir.appendingPathComponent(component)
 
-      // Check directory exists
       var isDir: ObjCBool = false
       guard fileManager.fileExists(atPath: componentPath.path, isDirectory: &isDir), isDir.boolValue
       else {
@@ -250,15 +237,12 @@ final class ModelManager: ObservableObject {
         return false
       }
 
-      // Check for compiled model (coremldata.bin) OR weights directory with weight.bin
       let coremlDataPath = componentPath.appendingPathComponent("coremldata.bin")
       let weightsPath = componentPath.appendingPathComponent("weights/weight.bin")
 
       let hasCoremlData = fileManager.fileExists(atPath: coremlDataPath.path)
       let hasWeights = fileManager.fileExists(atPath: weightsPath.path)
 
-      // MelSpectrogram typically doesn't have weights (small model), but others do
-      // At minimum, the directory should have model.mil or coremldata.bin
       let modelMilPath = componentPath.appendingPathComponent("model.mil")
       let hasModelMil = fileManager.fileExists(atPath: modelMilPath.path)
 
@@ -271,13 +255,13 @@ final class ModelManager: ObservableObject {
     return true
   }
 
-  var hasDownloadedModel: Bool {
+  public var hasDownloadedModel: Bool {
     !downloadedModels.isEmpty
   }
 
   // MARK: - Model Discovery
 
-  func loadDownloadedModels() {
+  public func loadDownloadedModels() {
     downloadedModels.removeAll()
 
     for model in WhisperModel.allCases {
@@ -287,12 +271,11 @@ final class ModelManager: ObservableObject {
     }
   }
 
-  func isDownloaded(_ model: WhisperModel) -> Bool {
-    // Always check fresh in case files changed
+  public func isDownloaded(_ model: WhisperModel) -> Bool {
     return modelPath(for: model) != nil
   }
 
-  func modelFileSize(_ model: WhisperModel) -> Int64? {
+  public func modelFileSize(_ model: WhisperModel) -> Int64? {
     guard let path = modelPath(for: model) else { return nil }
     return directorySize(at: URL(fileURLWithPath: path))
   }
@@ -310,7 +293,7 @@ final class ModelManager: ObservableObject {
 
   // MARK: - Download
 
-  func downloadModel(_ model: WhisperModel) {
+  public func downloadModel(_ model: WhisperModel) {
     guard !isDownloading[model, default: false] else { return }
 
     isDownloading[model] = true
@@ -319,14 +302,12 @@ final class ModelManager: ObservableObject {
 
     AppLogger.model.info("Starting download of model: \(model.displayName)")
 
-    // Clean up any previous incomplete download before starting
     cleanupIncompleteDownload(model)
 
     let task = Task { @MainActor in
       do {
         AppLogger.model.info("Starting WhisperKit download with progress tracking...")
 
-        // Use the proper WhisperKit.download static function with progress callback
         let modelFolder = try await WhisperKit.download(
           variant: model.rawValue,
           downloadBase: modelsDirectory,
@@ -342,16 +323,14 @@ final class ModelManager: ObservableObject {
 
         AppLogger.model.info("Download completed to: \(modelFolder.path)")
 
-        // Verify the download actually succeeded by checking for config.json
         if modelPath(for: model) != nil {
           AppLogger.model.info("Model \(model.displayName) downloaded and verified successfully")
           loadDownloadedModels()
           downloadProgress[model] = 1.0
           isDownloading[model] = false
           downloadTasks[model] = nil
-          NotificationManager.shared.showModelDownloadComplete(model: model)
+          onDownloadComplete?(model)
         } else {
-          // Download seemed to complete but files are missing
           AppLogger.model.error(
             "Model download completed but verification failed - files may be incomplete")
           throw ModelDownloadError.verificationFailed
@@ -361,7 +340,7 @@ final class ModelManager: ObservableObject {
           let errorMessage = Self.classifyDownloadError(error)
           AppLogger.model.error("Model download failed: \(errorMessage) (underlying: \(error))")
           downloadError = errorMessage
-          NotificationManager.shared.showModelDownloadFailed(reason: errorMessage)
+          onDownloadFailed?(errorMessage)
         }
         isDownloading[model] = false
         downloadProgress[model] = 0
@@ -372,12 +351,10 @@ final class ModelManager: ObservableObject {
     downloadTasks[model] = task
   }
 
-  /// Classify download errors into user-friendly messages
   private static func classifyDownloadError(_ error: Error) -> String {
     let errorString = error.localizedDescription.lowercased()
     let nsError = error as NSError
 
-    // Check for network-related errors
     if nsError.domain == NSURLErrorDomain {
       switch nsError.code {
       case NSURLErrorNotConnectedToInternet:
@@ -395,7 +372,6 @@ final class ModelManager: ObservableObject {
       }
     }
 
-    // Check for common error patterns in the message
     if errorString.contains("network") || errorString.contains("internet")
       || errorString.contains("connection") {
       return "Network error: Please check your internet connection and try again."
@@ -410,7 +386,6 @@ final class ModelManager: ObservableObject {
       return "Permission denied. Please check app permissions."
     }
 
-    // Check if it's our verification error
     if error is ModelDownloadError {
       return "Download incomplete. Please try again."
     }
@@ -418,12 +393,11 @@ final class ModelManager: ObservableObject {
     return "Download failed: \(error.localizedDescription)"
   }
 
-  /// Custom errors for model management
-  enum ModelDownloadError: LocalizedError {
+  public enum ModelDownloadError: LocalizedError {
     case verificationFailed
     case networkUnavailable
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
       switch self {
       case .verificationFailed:
         return "Model download verification failed"
@@ -433,15 +407,14 @@ final class ModelManager: ObservableObject {
     }
   }
 
-  func cancelDownload(_ model: WhisperModel) {
+  public func cancelDownload(_ model: WhisperModel) {
     downloadTasks[model]?.cancel()
     downloadTasks[model] = nil
     isDownloading[model] = false
     downloadProgress[model] = 0
   }
 
-  /// Removes any incomplete/corrupted model files to allow a fresh download
-  func cleanupIncompleteDownload(_ model: WhisperModel) {
+  public func cleanupIncompleteDownload(_ model: WhisperModel) {
     let whisperKitPath =
       modelsDirectory
       .appendingPathComponent("models/argmaxinc/whisperkit-coreml")
@@ -452,13 +425,11 @@ final class ModelManager: ObservableObject {
       .appendingPathComponent("models/argmaxinc/whisperkit-coreml/.cache/huggingface/download")
       .appendingPathComponent(model.whisperKitModelId)
 
-    // Only cleanup if the model exists but is incomplete
     if fileManager.fileExists(atPath: whisperKitPath.path) && !isModelComplete(at: whisperKitPath) {
       AppLogger.model.info("Cleaning up incomplete model at \(whisperKitPath.path)")
       try? fileManager.removeItem(at: whisperKitPath)
     }
 
-    // Also cleanup the download cache for this model
     if fileManager.fileExists(atPath: cachePath.path) {
       AppLogger.model.info("Cleaning up download cache at \(cachePath.path)")
       try? fileManager.removeItem(at: cachePath)
@@ -467,8 +438,7 @@ final class ModelManager: ObservableObject {
 
   // MARK: - Delete
 
-  func deleteModel(_ model: WhisperModel) throws {
-    // Delete from WhisperKit's nested path
+  public func deleteModel(_ model: WhisperModel) throws {
     let whisperKitPath =
       modelsDirectory
       .appendingPathComponent("models/argmaxinc/whisperkit-coreml")
@@ -478,7 +448,6 @@ final class ModelManager: ObservableObject {
       try fileManager.removeItem(at: whisperKitPath)
     }
 
-    // Also try direct path
     let directPath = modelsDirectory.appendingPathComponent(model.whisperKitModelId)
     if fileManager.fileExists(atPath: directPath.path) {
       try fileManager.removeItem(at: directPath)
@@ -490,46 +459,36 @@ final class ModelManager: ObservableObject {
 
   // MARK: - Background Upgrade
 
-  /// Start background download and prewarm of the quality model
-  /// Call this after the fast model is loaded and working
-  func startBackgroundUpgrade(engine: WhisperEngine) {
+  public func startBackgroundUpgrade(engine: WhisperEngine) {
     guard !isDownloaded(Self.qualityModel) else {
-      // Already downloaded, just need to prewarm
       Task {
         await prewarmForUpgrade(model: Self.qualityModel, engine: engine)
       }
       return
     }
 
-    // Download first, then prewarm
     AppLogger.model.info(
       "Starting background download of quality model: \(Self.qualityModel.displayName)")
     downloadModel(Self.qualityModel)
 
-    // Watch for download completion
     Task {
       await waitForDownloadAndPrewarm(model: Self.qualityModel, engine: engine)
     }
   }
 
-  /// Wait for a model to download, then prewarm it
   private func waitForDownloadAndPrewarm(model: WhisperModel, engine: WhisperEngine) async {
-    // Poll until download completes
     while isDownloading[model] == true {
-      try? await Task.sleep(nanoseconds: 1_000_000_000)  // Check every 1s
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
     }
 
-    // Check if download succeeded
     guard isDownloaded(model) else {
       AppLogger.model.error("Background download of \(model.displayName) failed")
       return
     }
 
-    // Now prewarm the model
     await prewarmForUpgrade(model: model, engine: engine)
   }
 
-  /// Prewarm a model in background so it's ready for hot-swap
   private func prewarmForUpgrade(model: WhisperModel, engine: WhisperEngine) async {
     await MainActor.run {
       isPrewarming[model] = true
@@ -539,15 +498,12 @@ final class ModelManager: ObservableObject {
     debugPrint("⏳ This may take 2-5 minutes for CoreML compilation (happens once per model)", category: "MODEL")
     AppLogger.model.info("Prewarming \(model.displayName) for background upgrade...")
 
-    // Create a temporary engine to prewarm the model
-    // This compiles CoreML models if needed
     let prewarmEngine = WhisperEngine()
 
-    // Start a progress indicator task
     let modelName = model.displayName
     let progressTask = Task {
-      for tick in 1...20 {  // Up to 10 minutes (20 x 30s)
-        try? await Task.sleep(nanoseconds: 30_000_000_000) // 30 seconds
+      for tick in 1...20 {
+        try? await Task.sleep(nanoseconds: 30_000_000_000)
         if Task.isCancelled { break }
         let elapsed = tick * 30
         await MainActor.run {
@@ -570,7 +526,6 @@ final class ModelManager: ObservableObject {
         debugPrint("✅ \(model.displayName) prewarmed in \(String(format: "%.1f", loadTime))s - ready for upgrade!", category: "MODEL")
         AppLogger.model.info("✅ \(model.displayName) prewarmed and ready for upgrade")
 
-        // Notify that upgrade is ready
         onUpgradeReady?(model)
       }
     } catch {
@@ -584,8 +539,7 @@ final class ModelManager: ObservableObject {
     }
   }
 
-  /// Perform the model upgrade - switch to the quality model
-  func performUpgrade() {
+  public func performUpgrade() {
     guard let upgradeModel = pendingUpgradeModel else { return }
 
     AppLogger.model.info("Upgrading to \(upgradeModel.displayName)")
@@ -595,7 +549,7 @@ final class ModelManager: ObservableObject {
 
   // MARK: - Formatting
 
-  static func formatSize(_ bytes: Int64) -> String {
+  public static func formatSize(_ bytes: Int64) -> String {
     let formatter = ByteCountFormatter()
     formatter.countStyle = .file
     return formatter.string(fromByteCount: bytes)

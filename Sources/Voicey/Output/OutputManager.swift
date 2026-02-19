@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import VoiceyCore
 import os
 
 /// Manages delivering transcribed text to the user via clipboard

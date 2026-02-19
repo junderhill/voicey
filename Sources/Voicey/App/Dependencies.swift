@@ -1,4 +1,5 @@
 import Foundation
+import VoiceyCore
 
 // MARK: - Service Protocols
 
@@ -55,6 +56,11 @@ protocol NotificationProviding {
   func showNetworkError()
   func showPerformanceWarning(_ message: String)
 }
+
+// MARK: - Protocol Conformances (VoiceyCore types)
+
+extension SettingsManager: SettingsProviding {}
+extension ModelManager: ModelProviding {}
 
 // MARK: - Dependencies Container
 

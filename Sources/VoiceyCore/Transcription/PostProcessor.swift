@@ -2,14 +2,13 @@ import Foundation
 import os
 
 /// Post-processes transcription output for punctuation, formatting, and voice commands
-final class PostProcessor {
+public final class PostProcessor {
   private let textExpansions: [String: String]
 
-  init() {
+  public init() {
     self.textExpansions = TextCleanup.defaultTextExpansions
   }
 
-  /// Get current voice commands settings (read fresh each time)
   private var voiceCommandsEnabled: Bool {
     SettingsManager.shared.voiceCommandsEnabled
   }
@@ -20,35 +19,29 @@ final class PostProcessor {
 
   // MARK: - Processing
 
-  func process(_ result: TranscriptionResult) -> String {
+  public func process(_ result: TranscriptionResult) -> String {
     var text = result.text
 
     AppLogger.transcription.info("PostProcessor: Input text: \"\(text)\"")
 
-    // First, filter out noise words and artifacts
     text = filterNoise(text)
 
     AppLogger.transcription.info("PostProcessor: After noise filter: \"\(text)\"")
 
-    // If the entire transcription was just noise, return empty
     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       AppLogger.transcription.info(
         "PostProcessor: Text is empty after noise filter, returning empty")
       return ""
     }
 
-    // Apply intelligent punctuation based on timing and segment analysis
     text = applyIntelligentPunctuation(text, segments: result.segments)
 
-    // Apply text expansions
     text = applyTextExpansions(text)
 
-    // Process voice commands if enabled
     if voiceCommandsEnabled {
       text = processVoiceCommands(text)
     }
 
-    // Final cleanup
     text = TextCleanup.cleanupSpacingAndPunctuation(text)
 
     AppLogger.transcription.info("PostProcessor: Final output: \"\(text)\"")

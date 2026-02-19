@@ -428,6 +428,131 @@ icon:
 	@rm -rf AppIcon.iconset AppIcon.icns
 	@echo "App icon saved to Resources/AppIcon.icns (will be included in bundle builds)"
 
+# ============================================================================
+# iOS Keyboard Extension
+# ============================================================================
+
+IOS_PROJECT = VoiceyKeyboard/VoiceyKeyboard.xcodeproj
+IOS_SCHEME_HOST = VoiceyKeyboard
+IOS_SCHEME_EXT = VoiceyDictation
+IOS_DERIVED_DATA = .build/ios-derived-data
+
+# Regenerate the Xcode project from project.yml (requires xcodegen)
+ios-generate:
+	@if ! command -v xcodegen &> /dev/null; then \
+		echo "XcodeGen not found. Install with: brew install xcodegen"; \
+		exit 1; \
+	fi
+	@echo "Generating iOS Xcode project..."
+	@cd VoiceyKeyboard && xcodegen generate
+	@echo "Project generated: $(IOS_PROJECT)"
+
+# Open the iOS project in Xcode
+ios-xcode: ios-generate
+	@open $(IOS_PROJECT)
+
+# List connected iOS devices
+ios-devices:
+	@echo "=== Connected iOS Devices ==="
+	@xcrun devicectl list devices 2>/dev/null | grep -E "(Name|Identifier|--)" || \
+		xcrun xctrace list devices 2>/dev/null | grep -v "Simulator" | head -20 || \
+		echo "No devices found. Connect your device and trust this computer."
+
+# List available simulators
+ios-simulators:
+	@echo "=== Available iOS Simulators ==="
+	@xcrun simctl list devices available | grep -E "(iPhone|iPad)" | head -20
+
+# Build the iOS host app + keyboard extension for a physical device
+# Usage: make ios-build TEAM_ID=YOUR_TEAM_ID
+IOS_TEAM_ID ?=
+ios-build:
+	@if [ -z "$(IOS_TEAM_ID)" ]; then \
+		echo "Error: TEAM_ID is required for device builds."; \
+		echo "Usage: make ios-build IOS_TEAM_ID=XXXXXXXXXX"; \
+		echo ""; \
+		echo "Find your Team ID at: https://developer.apple.com/account"; \
+		echo "Or run: make ios-teams"; \
+		exit 1; \
+	fi
+	@echo "Building iOS app for device..."
+	xcodebuild build \
+		-project $(IOS_PROJECT) \
+		-scheme $(IOS_SCHEME_HOST) \
+		-destination 'generic/platform=iOS' \
+		-derivedDataPath $(IOS_DERIVED_DATA) \
+		-allowProvisioningUpdates \
+		DEVELOPMENT_TEAM=$(IOS_TEAM_ID) \
+		CODE_SIGN_STYLE=Automatic
+
+# Build and install to a connected device
+# Usage: make ios-run IOS_TEAM_ID=YOUR_TEAM_ID [DEVICE_ID=XXXX]
+DEVICE_ID ?=
+ios-run:
+	@if [ -z "$(IOS_TEAM_ID)" ]; then \
+		echo "Error: IOS_TEAM_ID is required for device builds."; \
+		echo "Usage: make ios-run IOS_TEAM_ID=XXXXXXXXXX"; \
+		echo ""; \
+		echo "Find your Team ID at: https://developer.apple.com/account"; \
+		echo "Or run: make ios-teams"; \
+		exit 1; \
+	fi
+	@if [ -n "$(DEVICE_ID)" ]; then \
+		echo "Building and installing to device $(DEVICE_ID)..."; \
+		xcodebuild build \
+			-project $(IOS_PROJECT) \
+			-scheme $(IOS_SCHEME_HOST) \
+			-destination "id=$(DEVICE_ID)" \
+			-derivedDataPath $(IOS_DERIVED_DATA) \
+			-allowProvisioningUpdates \
+			DEVELOPMENT_TEAM=$(IOS_TEAM_ID) \
+			CODE_SIGN_STYLE=Automatic; \
+	else \
+		echo "Building and installing to first connected device..."; \
+		xcodebuild build \
+			-project $(IOS_PROJECT) \
+			-scheme $(IOS_SCHEME_HOST) \
+			-destination 'generic/platform=iOS' \
+			-derivedDataPath $(IOS_DERIVED_DATA) \
+			-allowProvisioningUpdates \
+			DEVELOPMENT_TEAM=$(IOS_TEAM_ID) \
+			CODE_SIGN_STYLE=Automatic; \
+	fi
+	@echo ""
+	@echo "Build complete. To install on device:"
+	@echo "  1. Open Xcode: make ios-xcode"
+	@echo "  2. Select your device and press Run"
+	@echo "  Or use: xcrun devicectl device install app --device <DEVICE_ID> <APP_PATH>"
+
+# Build for iOS Simulator
+ios-simulator:
+	@echo "Building for iOS Simulator..."
+	xcodebuild build \
+		-project $(IOS_PROJECT) \
+		-scheme $(IOS_SCHEME_HOST) \
+		-destination 'platform=iOS Simulator,name=iPhone 16' \
+		-derivedDataPath $(IOS_DERIVED_DATA) \
+		CODE_SIGN_IDENTITY=- \
+		CODE_SIGNING_REQUIRED=NO
+
+# Show available signing teams
+ios-teams:
+	@echo "=== Available Signing Teams ==="
+	@security find-identity -v -p codesigning | grep "Apple Development\|iPhone Developer" | while read line; do \
+		HASH=$$(echo "$$line" | awk '{print $$2}'); \
+		NAME=$$(echo "$$line" | sed 's/.*"\(.*\)".*/\1/'); \
+		echo "  $$NAME"; \
+	done || echo "  No development certificates found."
+	@echo ""
+	@echo "Your Team ID is the 10-character code in parentheses, e.g. (XXXXXXXXXX)"
+	@echo "Or find it at: https://developer.apple.com/account"
+
+# Clean iOS build artifacts
+ios-clean:
+	@echo "Cleaning iOS build..."
+	@rm -rf $(IOS_DERIVED_DATA)
+	@echo "Done."
+
 # Help
 help:
 	@echo "Voicey Build System"
@@ -470,6 +595,17 @@ help:
 	@echo "  reset-full        - Reset everything: state, models, and permissions"
 	@echo "  show-state        - Show current app settings and models"
 	@echo "  help              - Show this help"
+	@echo ""
+	@echo "iOS Keyboard Extension:"
+	@echo "  ios-xcode          - Generate and open iOS project in Xcode"
+	@echo "  ios-generate       - Regenerate Xcode project from project.yml"
+	@echo "  ios-build          - Build for physical device (IOS_TEAM_ID=XXX required)"
+	@echo "  ios-run            - Build and install to device (IOS_TEAM_ID=XXX required)"
+	@echo "  ios-simulator      - Build for iOS Simulator"
+	@echo "  ios-devices        - List connected iOS devices"
+	@echo "  ios-simulators     - List available simulators"
+	@echo "  ios-teams          - Show available signing teams"
+	@echo "  ios-clean          - Clean iOS build artifacts"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test-sparkle-linking - Verify Sparkle is only linked in direct builds"

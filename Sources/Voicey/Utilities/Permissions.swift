@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import Foundation
+import VoiceyCore
 import os
 
 /// Manages system permissions required by the app

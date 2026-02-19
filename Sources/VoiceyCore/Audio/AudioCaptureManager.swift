@@ -2,33 +2,44 @@ import AVFoundation
 import Accelerate
 import os
 
-protocol AudioCaptureManagerDelegate: AnyObject {
+public protocol AudioCaptureManagerDelegate: AnyObject {
   func audioCaptureManager(_ manager: AudioCaptureManager, didUpdateLevel level: Float)
 }
 
-final class AudioCaptureManager {
-  weak var delegate: AudioCaptureManagerDelegate?
+public final class AudioCaptureManager {
+  public weak var delegate: AudioCaptureManagerDelegate?
 
   private var audioEngine: AVAudioEngine?
   private var inputNode: AVAudioInputNode?
   private var audioBuffer: [Float] = []
   private let bufferQueue = DispatchQueue(label: "com.voicetype.audiobuffer", qos: .userInteractive)
 
-  private let targetSampleRate: Double = 16000.0  // Whisper requirement
+  private let targetSampleRate: Double = 16000.0
   private var converter: AVAudioConverter?
 
-  init() {
+  public init() {
     setupAudioSession()
   }
 
   private func setupAudioSession() {
-    // On macOS, we don't have AVAudioSession like iOS
-    // Audio configuration is handled through AVAudioEngine
+    #if os(iOS)
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.record, mode: .measurement, options: [])
+      try session.setActive(true)
+    } catch {
+      AppLogger.audio.error("Failed to configure audio session: \(error)")
+    }
+    #endif
   }
 
-  func startCapture() {
+  public func startCapture() {
     AppLogger.audio.info("AudioCapture: Starting capture...")
     audioBuffer.removeAll()
+
+    #if os(iOS)
+    setupAudioSession()
+    #endif
 
     audioEngine = AVAudioEngine()
     guard let audioEngine = audioEngine else {
@@ -44,7 +55,6 @@ final class AudioCaptureManager {
 
     let inputFormat = inputNode.outputFormat(forBus: 0)
 
-    // Create output format at 16kHz mono for Whisper
     guard
       let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -56,12 +66,10 @@ final class AudioCaptureManager {
       return
     }
 
-    // Create converter if sample rates differ
     if inputFormat.sampleRate != targetSampleRate {
       converter = AVAudioConverter(from: inputFormat, to: outputFormat)
     }
 
-    // Install tap on input node
     let bufferSize: AVAudioFrameCount = 1024
     inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] buffer, _ in
       self?.processAudioBuffer(buffer)
@@ -74,23 +82,23 @@ final class AudioCaptureManager {
     }
   }
 
-  func stopCapture() -> [Float]? {
-    // Stop the tap first to prevent more data from being queued
+  public func stopCapture() -> [Float]? {
     inputNode?.removeTap(onBus: 0)
     audioEngine?.stop()
 
-    // Wait for any in-flight buffer operations to complete
-    // by using a sync barrier on the queue
     var result: [Float]?
     bufferQueue.sync {
       result = audioBuffer
-      audioBuffer = []  // Clear for next capture
+      audioBuffer = []
     }
 
-    // Clean up references
     audioEngine = nil
     inputNode = nil
     converter = nil
+
+    #if os(iOS)
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #endif
 
     let sampleCount = result?.count ?? 0
     let durationSec = Double(sampleCount) / targetSampleRate
@@ -107,7 +115,6 @@ final class AudioCaptureManager {
     let frameLength = Int(buffer.frameLength)
     let inputFormat = buffer.format
 
-    // Convert to mono 16kHz if needed
     var samples: [Float]
 
     if inputFormat.sampleRate != targetSampleRate || inputFormat.channelCount > 1 {
@@ -116,14 +123,12 @@ final class AudioCaptureManager {
       samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
     }
 
-    // Calculate audio level for UI
     let level = calculateRMSLevel(samples)
     Task { @MainActor [weak self] in
       guard let self = self else { return }
       self.delegate?.audioCaptureManager(self, didUpdateLevel: level)
     }
 
-    // Append to buffer
     bufferQueue.async { [weak self] in
       self?.audioBuffer.append(contentsOf: samples)
     }
@@ -131,14 +136,12 @@ final class AudioCaptureManager {
 
   private func convertBuffer(_ buffer: AVAudioPCMBuffer) -> [Float] {
     guard let converter = converter else {
-      // Fallback: just average channels and return
       return averageChannels(buffer)
     }
 
     let inputFormat = buffer.format
     let outputFormat = converter.outputFormat
 
-    // Calculate output frame count based on sample rate ratio
     let ratio = outputFormat.sampleRate / inputFormat.sampleRate
     let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
 
@@ -195,24 +198,31 @@ final class AudioCaptureManager {
     var rms: Float = 0
     vDSP_rmsqv(samples, 1, &rms, vDSP_Length(samples.count))
 
-    // Convert to dB and normalize to 0-1 range
     let decibels = 20 * log10(max(rms, 0.00001))
-    let normalizedLevel = (decibels + 60) / 60  // Assuming -60dB to 0dB range
+    let normalizedLevel = (decibels + 60) / 60
     return max(0, min(1, normalizedLevel))
   }
 
   // MARK: - Device Selection
 
-  static func availableInputDevices() -> [AVCaptureDevice] {
+  public static func availableInputDevices() -> [AVCaptureDevice] {
+    #if os(iOS)
+    let discoverySession = AVCaptureDevice.DiscoverySession(
+      deviceTypes: [.builtInMicrophone],
+      mediaType: .audio,
+      position: .unspecified
+    )
+    #else
     let discoverySession = AVCaptureDevice.DiscoverySession(
       deviceTypes: [.builtInMicrophone, .externalUnknown],
       mediaType: .audio,
       position: .unspecified
     )
+    #endif
     return discoverySession.devices
   }
 
-  static var defaultInputDevice: AVCaptureDevice? {
+  public static var defaultInputDevice: AVCaptureDevice? {
     AVCaptureDevice.default(for: .audio)
   }
 }

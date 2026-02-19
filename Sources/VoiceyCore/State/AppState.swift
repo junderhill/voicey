@@ -2,50 +2,32 @@ import Combine
 import Foundation
 
 /// Represents the current state of the transcription process
-enum TranscriptionState: Equatable {
-  /// No transcription in progress
+public enum TranscriptionState: Equatable {
   case idle
-
-  /// Loading the Whisper model (first-time warmup)
   case loadingModel
-
-  /// Currently recording audio
-  /// - Parameter startTime: When recording started (for duration tracking)
   case recording(startTime: Date)
-
-  /// Processing recorded audio
   case processing
-
-  /// Transcription completed successfully
-  /// - Parameter text: The transcribed text
   case completed(text: String)
-
-  /// Transcription failed
-  /// - Parameter message: Error description
   case error(message: String)
 
   // MARK: - Convenience Properties
 
-  /// Whether we're currently recording
-  var isRecording: Bool {
+  public var isRecording: Bool {
     if case .recording = self { return true }
     return false
   }
 
-  /// Whether we're currently processing
-  var isProcessing: Bool {
+  public var isProcessing: Bool {
     if case .processing = self { return true }
     return false
   }
 
-  /// Whether we're loading the model
-  var isLoadingModel: Bool {
+  public var isLoadingModel: Bool {
     if case .loadingModel = self { return true }
     return false
   }
 
-  /// Whether we're in an active state (loading, recording or processing)
-  var isActive: Bool {
+  public var isActive: Bool {
     switch self {
     case .loadingModel, .recording, .processing:
       return true
@@ -54,16 +36,14 @@ enum TranscriptionState: Equatable {
     }
   }
 
-  /// Recording duration if currently recording
-  var recordingDuration: TimeInterval? {
+  public var recordingDuration: TimeInterval? {
     if case .recording(let startTime) = self {
       return Date().timeIntervalSince(startTime)
     }
     return nil
   }
 
-  /// Display text for the current state
-  var displayText: String {
+  public var displayText: String {
     switch self {
     case .idle:
       return L10n.State.ready
@@ -81,24 +61,24 @@ enum TranscriptionState: Equatable {
   }
 }
 
-/// Model readiness status - shown in status bar
-enum ModelStatus: Equatable {
+/// Model readiness status
+public enum ModelStatus: Equatable {
   case notDownloaded
   case loading
   case ready
   case failed(String)
 
-  var isReady: Bool {
+  public var isReady: Bool {
     if case .ready = self { return true }
     return false
   }
 
-  var isLoading: Bool {
+  public var isLoading: Bool {
     if case .loading = self { return true }
     return false
   }
 
-  var statusText: String {
+  public var statusText: String {
     switch self {
     case .notDownloaded: return L10n.ModelStatus.noModel
     case .loading: return L10n.ModelStatus.loading
@@ -109,24 +89,22 @@ enum ModelStatus: Equatable {
 }
 
 /// Holds the observable application state
-final class AppState: ObservableObject {
-  @Published var transcriptionState: TranscriptionState = .idle
-  @Published var audioLevel: Float = 0.0
-  @Published var currentModel: WhisperModel = SettingsManager.shared.selectedModel
-  @Published var lastTranscription: String = ""
+public final class AppState: ObservableObject {
+  @Published public var transcriptionState: TranscriptionState = .idle
+  @Published public var audioLevel: Float = 0.0
+  @Published public var currentModel: WhisperModel = SettingsManager.shared.selectedModel
+  @Published public var lastTranscription: String = ""
+  @Published public var modelStatus: ModelStatus = .notDownloaded
 
-  /// Model loading status - for startup warmup indication
-  @Published var modelStatus: ModelStatus = .notDownloaded
+  public init() {}
 
   // MARK: - Convenience Accessors
 
-  /// Whether we're currently recording (delegates to transcriptionState)
-  var isRecording: Bool {
+  public var isRecording: Bool {
     transcriptionState.isRecording
   }
 
-  /// Whether the app is ready to record (model loaded and permissions granted)
-  var isReadyToRecord: Bool {
+  public var isReadyToRecord: Bool {
     modelStatus.isReady
   }
 }

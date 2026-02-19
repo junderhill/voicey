@@ -3,24 +3,22 @@ import Accelerate
 import Combine
 
 /// Provides real-time audio level monitoring for UI feedback
-final class AudioLevelMonitor: ObservableObject {
-  @Published var level: Float = 0
-  @Published var levelHistory: [Float] = []
+public final class AudioLevelMonitor: ObservableObject {
+  @Published public var level: Float = 0
+  @Published public var levelHistory: [Float] = []
 
   private let historySize = 50
   private var cancellables = Set<AnyCancellable>()
 
-  init() {
-    // Initialize with empty history
+  public init() {
     levelHistory = [Float](repeating: 0, count: historySize)
   }
 
-  func updateLevel(_ newLevel: Float) {
+  public func updateLevel(_ newLevel: Float) {
     Task { @MainActor [weak self] in
       guard let self = self else { return }
       self.level = newLevel
 
-      // Update history for waveform visualization
       self.levelHistory.append(newLevel)
       if self.levelHistory.count > self.historySize {
         self.levelHistory.removeFirst()
@@ -28,13 +26,11 @@ final class AudioLevelMonitor: ObservableObject {
     }
   }
 
-  func reset() {
+  public func reset() {
     level = 0
     levelHistory = [Float](repeating: 0, count: historySize)
   }
 }
-
-// MARK: - Test Audio Level
 
 // MARK: - Test Audio Level
 
@@ -57,11 +53,21 @@ private final class MaxLevelTracker: @unchecked Sendable {
 }
 
 extension AudioLevelMonitor {
-  /// Creates a test audio engine to verify microphone input
-  static func testMicrophone(
+  public static func testMicrophone(
     duration: TimeInterval = 3.0, onLevel: @escaping (Float) -> Void,
     completion: @escaping (Bool) -> Void
   ) {
+    #if os(iOS)
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.record, mode: .measurement, options: [])
+      try session.setActive(true)
+    } catch {
+      completion(false)
+      return
+    }
+    #endif
+
     let audioEngine = AVAudioEngine()
     let inputNode = audioEngine.inputNode
     let format = inputNode.outputFormat(forBus: 0)
@@ -98,7 +104,10 @@ extension AudioLevelMonitor {
       await MainActor.run {
         audioEngine.stop()
         inputNode.removeTap(onBus: 0)
-        completion(tracker.maxLevel > 0.1)  // Consider successful if any significant audio detected
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
+        completion(tracker.maxLevel > 0.1)
       }
     }
   }

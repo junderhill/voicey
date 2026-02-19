@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI
+import VoiceyCore
 
 /// Custom panel that can receive key events even when not key window
 final class KeyablePanel: NSPanel {

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import UserNotifications
+import VoiceyCore
 import os
 
 /// Manages system notifications for the app

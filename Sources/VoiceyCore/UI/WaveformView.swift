@@ -1,14 +1,18 @@
 import SwiftUI
 
 /// Real-time audio waveform visualization
-struct WaveformView: View {
-  let level: Float
+public struct WaveformView: View {
+  public let level: Float
 
   @State private var levels: [CGFloat] = Array(repeating: 0.1, count: 12)
   @State private var timer: Timer?
   @State private var lastLevel: Float = 0
 
-  var body: some View {
+  public init(level: Float) {
+    self.level = level
+  }
+
+  public var body: some View {
     HStack(spacing: 3) {
       ForEach(0..<levels.count, id: \.self) { index in
         RoundedRectangle(cornerRadius: 1.5)
@@ -30,7 +34,6 @@ struct WaveformView: View {
   }
 
   private func startTimer() {
-    // Update the waveform at a consistent rate (60fps-ish)
     timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
       updateLevels(with: lastLevel)
     }
@@ -57,13 +60,10 @@ struct WaveformView: View {
   }
 
   private func updateLevels(with newLevel: Float) {
-    // Shift levels left and add new level
     var newLevels = levels
     newLevels.removeFirst()
 
-    // Add some variation based on the level
     let baseLevel = CGFloat(newLevel)
-    // More variation at low levels to show activity even in silence
     let variationRange = baseLevel < 0.2 ? 0.05 : 0.1
     let variation = CGFloat.random(in: -variationRange...variationRange)
     let adjustedLevel = max(0.05, min(1.0, baseLevel + variation))
@@ -74,12 +74,16 @@ struct WaveformView: View {
 }
 
 /// Alternative meter-style visualization
-struct LevelMeterView: View {
-  let level: Float
+public struct LevelMeterView: View {
+  public let level: Float
 
   private let segments = 10
 
-  var body: some View {
+  public init(level: Float) {
+    self.level = level
+  }
+
+  public var body: some View {
     HStack(spacing: 2) {
       ForEach(0..<segments, id: \.self) { index in
         RoundedRectangle(cornerRadius: 2)
@@ -108,10 +112,14 @@ struct LevelMeterView: View {
 }
 
 /// Circular audio level indicator
-struct CircularLevelView: View {
-  let level: Float
+public struct CircularLevelView: View {
+  public let level: Float
 
-  var body: some View {
+  public init(level: Float) {
+    self.level = level
+  }
+
+  public var body: some View {
     ZStack {
       Circle()
         .stroke(Color.gray.opacity(0.3), lineWidth: 3)
@@ -139,8 +147,6 @@ struct CircularLevelView: View {
     )
   }
 }
-
-// MARK: - Previews
 
 #Preview("Waveform") {
   WaveformView(level: 0.5)

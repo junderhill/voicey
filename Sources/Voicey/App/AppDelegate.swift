@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import KeyboardShortcuts
 import SwiftUI
+import VoiceyCore
 import os
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -170,6 +171,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Setup model upgrade callback
     ModelManager.shared.onUpgradeReady = { [weak self] model in
       self?.handleModelUpgradeReady(model)
+    }
+
+    // Wire up model download notifications
+    ModelManager.shared.onDownloadComplete = { model in
+      NotificationManager.shared.showModelDownloadComplete(model: model)
+    }
+    ModelManager.shared.onDownloadFailed = { reason in
+      NotificationManager.shared.showModelDownloadFailed(reason: reason)
     }
   }
 

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VoiceyCore
 
 struct ModelDownloadView: View {
   @ObservedObject var modelManager = ModelManager.shared
