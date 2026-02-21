@@ -1,9 +1,11 @@
 import SwiftUI
+import AVFoundation
 import VoiceyCore
 
 struct ContentView: View {
   @StateObject private var modelManager = ModelManager.shared
   @State private var selectedTab = 0
+  @State private var micPermission: AVAudioSession.RecordPermission = AVAudioSession.sharedInstance().recordPermission
 
   var body: some View {
     NavigationStack {
@@ -70,8 +72,10 @@ struct ContentView: View {
         action: nil
       )
 
+      micPermissionStep
+
       SetupStepView(
-        number: 4,
+        number: 5,
         title: "Switch to Voicey",
         description: "In any text field, long-press the globe icon and select \"Voicey Dictation\"",
         actionLabel: nil,
@@ -81,6 +85,59 @@ struct ContentView: View {
     .padding()
     .background(Color(.secondarySystemGroupedBackground))
     .cornerRadius(12)
+  }
+
+  private var micPermissionStep: some View {
+    HStack(alignment: .top, spacing: 12) {
+      ZStack {
+        Circle()
+          .fill(micPermission == .granted ? Color.green : Color.blue)
+          .frame(width: 28, height: 28)
+
+        if micPermission == .granted {
+          Image(systemName: "checkmark")
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(.white)
+        } else {
+          Text("4")
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(.white)
+        }
+      }
+
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Grant Microphone Access")
+          .font(.subheadline.weight(.medium))
+
+        if micPermission == .granted {
+          Text("Microphone access granted")
+            .font(.caption)
+            .foregroundStyle(.green)
+        } else if micPermission == .denied {
+          Text("Microphone access denied. Open Settings to enable it.")
+            .font(.caption)
+            .foregroundStyle(.red)
+
+          Button("Open Settings") {
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+              UIApplication.shared.open(url)
+            }
+          }
+          .font(.caption.weight(.medium))
+          .padding(.top, 2)
+        } else {
+          Text("Tap below to allow Voicey to use your microphone for dictation.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+          Button("Grant Access") {
+            requestMicPermission()
+          }
+          .font(.caption.weight(.medium))
+          .padding(.top, 2)
+        }
+      }
+    }
   }
 
   // MARK: - Model Section
@@ -124,6 +181,14 @@ struct ContentView: View {
   private func openKeyboardSettings() {
     if let url = URL(string: UIApplication.openSettingsURLString) {
       UIApplication.shared.open(url)
+    }
+  }
+
+  private func requestMicPermission() {
+    AVAudioSession.sharedInstance().requestRecordPermission { granted in
+      Task { @MainActor in
+        micPermission = granted ? .granted : .denied
+      }
     }
   }
 }

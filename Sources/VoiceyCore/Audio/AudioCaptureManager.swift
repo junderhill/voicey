@@ -25,9 +25,18 @@ public final class AudioCaptureManager {
   #if os(iOS)
   private func activateAudioSession() throws {
     let session = AVAudioSession.sharedInstance()
-    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+
+    // Deactivate first to clear any stale state from a previous attempt
+    try? session.setActive(false, options: .notifyOthersOnDeactivation)
+
+    try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
+    try session.setPreferredSampleRate(16000)
+    try session.setPreferredIOBufferDuration(0.02)
     try session.setActive(true, options: [])
-    AppLogger.audio.info("AudioCapture: Audio session activated (category=\(session.category.rawValue), sampleRate=\(session.sampleRate), inputs=\(session.availableInputs?.count ?? 0))")
+
+    let inputs = session.availableInputs ?? []
+    let inputNames = inputs.map { $0.portName }.joined(separator: ", ")
+    AppLogger.audio.info("AudioCapture: Audio session activated (category=\(session.category.rawValue, privacy: .public), sampleRate=\(session.sampleRate, privacy: .public), inputs=[\(inputNames, privacy: .public)], ioBuffer=\(session.ioBufferDuration, privacy: .public))")
   }
   #endif
 
@@ -45,7 +54,7 @@ public final class AudioCaptureManager {
       try activateAudioSession()
     } catch {
       lastError = "Audio session setup failed: \(error.localizedDescription)"
-      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      AppLogger.audio.error("AudioCapture: \(self.lastError!, privacy: .public)")
       return false
     }
     #endif
@@ -53,40 +62,74 @@ public final class AudioCaptureManager {
     audioEngine = AVAudioEngine()
     guard let audioEngine = audioEngine else {
       lastError = "Failed to create audio engine"
-      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      AppLogger.audio.error("AudioCapture: \(self.lastError!, privacy: .public)")
       return false
     }
 
     inputNode = audioEngine.inputNode
     guard let inputNode = inputNode else {
       lastError = "Failed to get audio input node"
-      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      AppLogger.audio.error("AudioCapture: \(self.lastError!, privacy: .public)")
       return false
     }
 
-    // Use nil format for the tap -- lets the system use the hardware's native format.
-    // Specifying an explicit format can cause audioEngine.start() to fail in
-    // keyboard extensions where the audio routing differs from a normal app.
+    let hwFormat = inputNode.outputFormat(forBus: 0)
+    AppLogger.audio.info("AudioCapture: Hardware format - sampleRate=\(hwFormat.sampleRate, privacy: .public), channels=\(hwFormat.channelCount, privacy: .public)")
+
     let bufferSize: AVAudioFrameCount = 1024
     inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: nil) { [weak self] buffer, _ in
       self?.processAudioBuffer(buffer)
     }
+
+    audioEngine.prepare()
 
     do {
       try audioEngine.start()
       AppLogger.audio.info("AudioCapture: Engine started successfully")
       return true
     } catch {
-      lastError = "Audio engine failed to start: \(error.localizedDescription)"
-      AppLogger.audio.error("AudioCapture: \(self.lastError!)")
+      AppLogger.audio.error("AudioCapture: First start attempt failed: \(error.localizedDescription, privacy: .public), retrying...")
+
+      // Retry once: tear down, re-activate session, and try again
       inputNode.removeTap(onBus: 0)
-      self.audioEngine = nil
-      self.inputNode = nil
-      return false
+      audioEngine.reset()
+
+      #if os(iOS)
+      do {
+        try activateAudioSession()
+      } catch {
+        lastError = "Audio session re-activation failed: \(error.localizedDescription)"
+        AppLogger.audio.error("AudioCapture: \(self.lastError!, privacy: .public)")
+        self.audioEngine = nil
+        self.inputNode = nil
+        return false
+      }
+      #endif
+
+      inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: nil) { [weak self] buffer, _ in
+        self?.processAudioBuffer(buffer)
+      }
+      audioEngine.prepare()
+
+      do {
+        try audioEngine.start()
+        AppLogger.audio.info("AudioCapture: Engine started successfully on retry")
+        return true
+      } catch {
+        lastError = "Audio engine failed to start: \(error.localizedDescription)"
+        AppLogger.audio.error("AudioCapture: \(self.lastError!, privacy: .public)")
+        inputNode.removeTap(onBus: 0)
+        self.audioEngine = nil
+        self.inputNode = nil
+        return false
+      }
     }
   }
 
-  public func stopCapture() -> [Float]? {
+  /// Stop capturing audio and return the recorded samples.
+  /// - Parameter deactivateSession: If `false`, the audio session stays active
+  ///   (used when a keep-alive will reclaim the session).
+  public func stopCapture(deactivateSession: Bool = true) -> [Float]? {
     inputNode?.removeTap(onBus: 0)
     audioEngine?.stop()
 
@@ -101,7 +144,9 @@ public final class AudioCaptureManager {
     converter = nil
 
     #if os(iOS)
-    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    if deactivateSession {
+      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
     #endif
 
     let sampleCount = result?.count ?? 0

@@ -15,8 +15,8 @@ struct KeyboardView: View {
 
         Spacer()
 
-        if viewModel.transcriptionState.isRecording, let duration = viewModel.transcriptionState.recordingDuration {
-          Text(formatDuration(duration))
+        if case .recording(let startTime) = viewModel.keyboardState {
+          Text(startTime, style: .timer)
             .font(.caption.monospacedDigit())
             .foregroundStyle(.red)
         }
@@ -27,14 +27,25 @@ struct KeyboardView: View {
 
       // Main content area
       ZStack {
-        if viewModel.transcriptionState.isRecording {
-          recordingView
-        } else if viewModel.transcriptionState.isProcessing || viewModel.transcriptionState.isLoadingModel {
-          processingView
-        } else if !viewModel.hasModel {
+        if !viewModel.hasModel {
           noModelView
+        } else if !viewModel.hasFullAccess {
+          noAccessView
         } else {
-          idleView
+          switch viewModel.keyboardState {
+          case .idle, .done, .failed:
+            if viewModel.needsFallbackOpen {
+              fallbackView
+            } else {
+              idleView
+            }
+          case .waitingForHostApp:
+            waitingView
+          case .recording:
+            recordingView
+          case .processing:
+            processingView
+          }
         }
       }
       .frame(maxWidth: .infinity)
@@ -42,7 +53,6 @@ struct KeyboardView: View {
 
       // Bottom toolbar
       HStack(spacing: 20) {
-        // Globe / Next keyboard button
         Button(action: { viewModel.switchKeyboard() }) {
           Image(systemName: "globe")
             .font(.system(size: 20))
@@ -52,7 +62,6 @@ struct KeyboardView: View {
 
         Spacer()
 
-        // Backspace
         Button(action: { viewModel.deleteBackward() }) {
           Image(systemName: "delete.left")
             .font(.system(size: 18))
@@ -60,7 +69,6 @@ struct KeyboardView: View {
             .frame(width: 44, height: 36)
         }
 
-        // Space
         Button(action: { viewModel.insertSpace() }) {
           Text("space")
             .font(.caption)
@@ -71,7 +79,6 @@ struct KeyboardView: View {
             .cornerRadius(6)
         }
 
-        // Return
         Button(action: { viewModel.insertReturn() }) {
           Image(systemName: "return")
             .font(.system(size: 18))
@@ -90,7 +97,7 @@ struct KeyboardView: View {
 
   private var idleView: some View {
     VStack(spacing: 12) {
-      Button(action: { viewModel.toggleRecording() }) {
+      Button(action: { viewModel.startDictation() }) {
         ZStack {
           Circle()
             .fill(Color.red.opacity(0.15))
@@ -109,22 +116,25 @@ struct KeyboardView: View {
     }
   }
 
+  private var waitingView: some View {
+    VStack(spacing: 12) {
+      ProgressView()
+        .scaleEffect(1.3)
+
+      Text("Connecting...")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+
   private var recordingView: some View {
     VStack(spacing: 12) {
-      Button(action: { viewModel.toggleRecording() }) {
+      Button(action: { viewModel.stopDictation() }) {
         ZStack {
-          // Pulsing ring
-          Circle()
-            .stroke(Color.red.opacity(0.3), lineWidth: 3)
-            .frame(width: 72, height: 72)
-            .scaleEffect(1.0 + CGFloat(viewModel.audioLevel) * 0.3)
-            .animation(.easeOut(duration: 0.1), value: viewModel.audioLevel)
-
           Circle()
             .fill(Color.red)
             .frame(width: 64, height: 64)
 
-          // Stop icon
           RoundedRectangle(cornerRadius: 4)
             .fill(.white)
             .frame(width: 22, height: 22)
@@ -132,8 +142,9 @@ struct KeyboardView: View {
       }
       .buttonStyle(.plain)
 
-      WaveformView(level: viewModel.audioLevel)
-        .frame(width: 120, height: 24)
+      Text("Tap to stop")
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
   }
 
@@ -142,7 +153,31 @@ struct KeyboardView: View {
       ProgressView()
         .scaleEffect(1.3)
 
-      Text(viewModel.transcriptionState.isLoadingModel ? "Loading model..." : "Transcribing...")
+      Text("Transcribing...")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  /// Shown when background signaling failed -- opens the host app as fallback.
+  private var fallbackView: some View {
+    VStack(spacing: 12) {
+      Link(destination: DictationBridge.dictateURL) {
+        ZStack {
+          Circle()
+            .fill(Color.blue.opacity(0.15))
+            .frame(width: 72, height: 72)
+
+          Image(systemName: "arrow.up.forward.app")
+            .font(.system(size: 28))
+            .foregroundStyle(.blue)
+        }
+      }
+      .simultaneousGesture(TapGesture().onEnded {
+        viewModel.prepareFallbackDictation()
+      })
+
+      Text("Open Voicey app to dictate")
         .font(.caption)
         .foregroundStyle(.secondary)
     }
@@ -157,19 +192,25 @@ struct KeyboardView: View {
       Text("No Model Available")
         .font(.subheadline.weight(.medium))
 
-      Text("Open the Voicey app to download a speech model.")
+      Link("Open Voicey to download a model", destination: DictationBridge.hostAppURL)
+        .font(.caption)
+    }
+  }
+
+  private var noAccessView: some View {
+    VStack(spacing: 8) {
+      Image(systemName: "lock.shield")
+        .font(.system(size: 28))
+        .foregroundStyle(.orange)
+
+      Text("Full Access Required")
+        .font(.subheadline.weight(.medium))
+
+      Text("Settings > Keyboards > Voicey Dictation > Allow Full Access")
         .font(.caption)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
         .padding(.horizontal, 24)
     }
-  }
-
-  // MARK: - Helpers
-
-  private func formatDuration(_ duration: TimeInterval) -> String {
-    let seconds = Int(duration) % 60
-    let minutes = Int(duration) / 60
-    return String(format: "%d:%02d", minutes, seconds)
   }
 }

@@ -1,6 +1,5 @@
 import UIKit
 import SwiftUI
-import AVFoundation
 import VoiceyCore
 
 final class KeyboardViewController: UIInputViewController {
@@ -15,6 +14,9 @@ final class KeyboardViewController: UIInputViewController {
       advanceToNextInputMethod: { [weak self] in
         guard let self else { return }
         self.advanceToNextInputMode()
+      },
+      checkFullAccess: { [weak self] in
+        self?.hasFullAccess ?? false
       }
     )
     viewModel = vm
@@ -41,6 +43,7 @@ final class KeyboardViewController: UIInputViewController {
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
     viewModel?.updateProxy(textDocumentProxy)
+    viewModel?.checkForDictationResult()
   }
 
   override func textDidChange(_ textInput: UITextInput?) {
@@ -53,24 +56,42 @@ final class KeyboardViewController: UIInputViewController {
 
 @MainActor
 final class KeyboardViewModel: ObservableObject {
-  @Published var transcriptionState: TranscriptionState = .idle
-  @Published var audioLevel: Float = 0.0
+  enum KeyboardState: Equatable {
+    case idle
+    case waitingForHostApp
+    case recording(startTime: Date)
+    case processing
+    case done(text: String)
+    case failed(message: String)
+  }
+
   @Published var hasFullAccess: Bool = false
   @Published var hasModel: Bool = false
   @Published var statusMessage: String = ""
+  @Published var keyboardState: KeyboardState = .idle
+
+  /// Whether the host app didn't respond and we need the fallback Link
+  @Published var needsFallbackOpen = false
 
   private var textDocumentProxy: UITextDocumentProxy
   private let advanceToNextInputMethod: () -> Void
-  private var audioCaptureManager: AudioCaptureManager?
-  private var whisperEngine: WhisperEngine?
-  private var postProcessor: PostProcessor?
+  private let checkFullAccessFromController: () -> Bool
+  private let bridge = DictationBridge.shared
+  private var pollTimer: Timer?
+  private var waitTimeout: Task<Void, Never>?
 
-  init(textDocumentProxy: UITextDocumentProxy, advanceToNextInputMethod: @escaping () -> Void) {
+  init(
+    textDocumentProxy: UITextDocumentProxy,
+    advanceToNextInputMethod: @escaping () -> Void,
+    checkFullAccess: @escaping () -> Bool
+  ) {
     self.textDocumentProxy = textDocumentProxy
     self.advanceToNextInputMethod = advanceToNextInputMethod
+    self.checkFullAccessFromController = checkFullAccess
 
-    checkFullAccess()
+    refreshFullAccess()
     checkModelAvailability()
+    checkForDictationResult()
   }
 
   func updateProxy(_ proxy: UITextDocumentProxy) {
@@ -83,17 +104,9 @@ final class KeyboardViewModel: ObservableObject {
 
   // MARK: - Access & Model Checks
 
-  private func checkFullAccess() {
-    hasFullAccess = isOpenAccessGranted()
-  }
-
-  private func isOpenAccessGranted() -> Bool {
-    // Test Full Access by writing to the pasteboard -- this fails when Full Access is off
-    let original = UIPasteboard.general.string
-    UIPasteboard.general.string = "voicey-access-check"
-    let hasAccess = UIPasteboard.general.string == "voicey-access-check"
-    UIPasteboard.general.string = original
-    return hasAccess
+  func refreshFullAccess() {
+    hasFullAccess = checkFullAccessFromController()
+    AppLogger.audio.info("KeyboardVM: Full Access = \(self.hasFullAccess, privacy: .public)")
   }
 
   private func checkModelAvailability() {
@@ -110,173 +123,126 @@ final class KeyboardViewModel: ObservableObject {
     }
   }
 
-  // MARK: - Recording
+  // MARK: - Dictation Control
 
-  func toggleRecording() {
-    if transcriptionState.isRecording {
-      stopRecording()
-    } else {
-      startRecording()
+  func startDictation() {
+    refreshFullAccess()
+    guard hasFullAccess else {
+      statusMessage = "Enable Full Access in Settings > Keyboards > Voicey Dictation."
+      return
     }
-  }
-
-  private func startRecording() {
     guard hasModel else {
       statusMessage = "No model available. Open the Voicey app first."
       return
     }
 
-    // Re-check Full Access before each recording attempt
-    checkFullAccess()
-    guard hasFullAccess else {
-      statusMessage = "Enable Full Access in Settings > Keyboards > Voicey Dictation."
-      return
+    needsFallbackOpen = false
+    keyboardState = .waitingForHostApp
+    statusMessage = "Starting..."
+
+    bridge.postStartSignal()
+    startPolling()
+
+    // If the host app doesn't start recording within 3 seconds, show fallback
+    waitTimeout = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 3_000_000_000)
+      guard let self, case .waitingForHostApp = self.keyboardState else { return }
+      AppLogger.audio.info("KeyboardVM: Host app didn't respond, showing fallback")
+      self.needsFallbackOpen = true
+      self.statusMessage = "Voicey app not running. Tap to open it."
     }
 
-    // Use AVAudioSession.recordPermission -- the correct API for keyboard extensions
-    let recordPermission = AVAudioSession.sharedInstance().recordPermission
-    guard recordPermission == .granted else {
-      if recordPermission == .undetermined {
-        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-          Task { @MainActor in
-            if granted {
-              self?.startRecording()
-            } else {
-              self?.statusMessage = "Microphone access denied. Enable Full Access in Settings."
-            }
+    AppLogger.audio.info("KeyboardVM: Start signal posted, waiting for host app")
+  }
+
+  func stopDictation() {
+    bridge.postStopSignal()
+    keyboardState = .processing
+    statusMessage = "Transcribing..."
+    AppLogger.audio.info("KeyboardVM: Stop signal posted")
+  }
+
+  /// Checks for a completed dictation result from the host app and inserts it.
+  func checkForDictationResult() {
+    let status = bridge.currentStatus
+
+    switch status {
+    case .recording:
+      waitTimeout?.cancel()
+      needsFallbackOpen = false
+      if case .recording = keyboardState {
+        // Already in recording state, nothing to update
+      } else {
+        keyboardState = .recording(startTime: Date())
+        statusMessage = "Listening..."
+      }
+
+    case .processing:
+      keyboardState = .processing
+      statusMessage = "Transcribing..."
+
+    case .completed:
+      if let text = bridge.consumeResult() {
+        textDocumentProxy.insertText(text)
+        keyboardState = .done(text: text)
+        statusMessage = "Done!"
+        AppLogger.audio.info("KeyboardVM: Inserted dictation result (\(text.count, privacy: .public) chars)")
+        stopPolling()
+
+        Task {
+          try? await Task.sleep(nanoseconds: 2_000_000_000)
+          if case .done = self.keyboardState {
+            self.keyboardState = .idle
+            self.statusMessage = "Ready"
           }
         }
-      } else {
-        statusMessage = "Microphone access denied. Enable Full Access in Settings > Keyboards > Voicey."
       }
-      return
-    }
 
-    // Lazily initialize engine
-    if whisperEngine == nil {
-      whisperEngine = WhisperEngine()
-      postProcessor = PostProcessor()
-    }
-
-    // Load model if needed
-    if whisperEngine?.isModelLoaded != true {
-      transcriptionState = .loadingModel
-      statusMessage = "Loading model..."
+    case .failed:
+      let error = bridge.errorMessage ?? "Unknown error"
+      keyboardState = .failed(message: error)
+      statusMessage = "Failed: \(error)"
+      bridge.reset()
+      stopPolling()
 
       Task {
-        // Pick the best extension-compatible model
-        let extensionModels = ModelManager.shared.downloadedModels.filter { $0.isSuitableForExtension }
-        guard let model = extensionModels.first else {
-          transcriptionState = .error(message: "No compatible model")
-          statusMessage = "No compatible model found."
-          return
-        }
-
-        do {
-          try await whisperEngine?.loadModel(variant: model.rawValue)
-          beginRecording()
-        } catch {
-          transcriptionState = .error(message: error.localizedDescription)
-          statusMessage = "Failed to load model."
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        if case .failed = self.keyboardState {
+          self.keyboardState = .idle
+          self.statusMessage = "Ready"
         }
       }
-      return
-    }
 
-    beginRecording()
-  }
-
-  private func beginRecording() {
-    if audioCaptureManager == nil {
-      audioCaptureManager = AudioCaptureManager()
-    }
-
-    // Set up audio level delegate
-    let levelUpdater = AudioLevelUpdater { [weak self] level in
-      self?.audioLevel = level
-    }
-    audioCaptureManager?.delegate = levelUpdater
-    self._levelUpdater = levelUpdater
-
-    let started = audioCaptureManager?.startCapture() ?? false
-    guard started else {
-      let reason = audioCaptureManager?.lastError ?? "Unknown error"
-      AppLogger.audio.error("KeyboardVM: Audio capture failed to start: \(reason)")
-      transcriptionState = .error(message: reason)
-      statusMessage = "Mic error: \(reason)"
-      _levelUpdater = nil
-      return
-    }
-
-    transcriptionState = .recording(startTime: Date())
-    statusMessage = "Listening..."
-  }
-
-  // Prevent deallocation of the delegate
-  private var _levelUpdater: AudioLevelUpdater?
-
-  private func stopRecording() {
-    guard let audioBuffer = audioCaptureManager?.stopCapture() else {
-      transcriptionState = .idle
-      statusMessage = "No audio captured."
-      return
-    }
-
-    _levelUpdater = nil
-
-    let durationSec = Double(audioBuffer.count) / 16000.0
-    let rms = audioBuffer.isEmpty ? 0 : sqrt(audioBuffer.map { $0 * $0 }.reduce(0, +) / Float(audioBuffer.count))
-    AppLogger.audio.info("KeyboardVM: Captured \(audioBuffer.count) samples (~\(String(format: "%.1f", durationSec))s, RMS=\(String(format: "%.4f", rms)))")
-
-    if durationSec < 0.5 {
-      transcriptionState = .idle
-      statusMessage = "Too short. Try again."
-      return
-    }
-
-    transcriptionState = .processing
-    statusMessage = "Transcribing..."
-
-    Task {
-      await processTranscription(audioBuffer: audioBuffer)
+    case .idle, .requested:
+      break
     }
   }
 
-  private func processTranscription(audioBuffer: [Float]) async {
-    do {
-      guard let result = try await whisperEngine?.transcribe(audioBuffer: audioBuffer) else {
-        transcriptionState = .idle
-        statusMessage = "Transcription returned no result."
-        return
+  // MARK: - Polling
+
+  private func startPolling() {
+    stopPolling()
+    pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+      Task { @MainActor in
+        self?.checkForDictationResult()
       }
-
-      let processedText = postProcessor?.process(result) ?? result.text
-      AppLogger.audio.info("KeyboardVM: Transcription raw='\(result.text)', processed='\(processedText)'")
-
-      if processedText.isEmpty {
-        transcriptionState = .idle
-        statusMessage = "No speech detected."
-        return
-      }
-
-      textDocumentProxy.insertText(processedText)
-      transcriptionState = .completed(text: processedText)
-      statusMessage = "Done!"
-
-      // Reset to idle after a short delay
-      try? await Task.sleep(nanoseconds: 1_500_000_000)
-      if case .completed = transcriptionState {
-        transcriptionState = .idle
-        statusMessage = "Ready"
-      }
-    } catch {
-      transcriptionState = .error(message: error.localizedDescription)
-      statusMessage = "Error: \(error.localizedDescription)"
-
-      try? await Task.sleep(nanoseconds: 2_000_000_000)
-      transcriptionState = .idle
-      statusMessage = "Ready"
     }
+  }
+
+  private func stopPolling() {
+    pollTimer?.invalidate()
+    pollTimer = nil
+    waitTimeout?.cancel()
+    waitTimeout = nil
+  }
+
+  // MARK: - Fallback (open host app)
+
+  /// Prepares a fallback dictation request for opening the host app via Link.
+  func prepareFallbackDictation() {
+    bridge.requestDictation()
+    statusMessage = "Opening Voicey app..."
+    startPolling()
   }
 
   // MARK: - Utility Actions
@@ -291,20 +257,5 @@ final class KeyboardViewModel: ObservableObject {
 
   func insertReturn() {
     textDocumentProxy.insertText("\n")
-  }
-}
-
-// MARK: - Audio Level Bridge
-
-/// Bridges AudioCaptureManagerDelegate to a closure for the view model
-private final class AudioLevelUpdater: AudioCaptureManagerDelegate {
-  private let onLevel: (Float) -> Void
-
-  init(onLevel: @escaping (Float) -> Void) {
-    self.onLevel = onLevel
-  }
-
-  func audioCaptureManager(_ manager: AudioCaptureManager, didUpdateLevel level: Float) {
-    onLevel(level)
   }
 }
